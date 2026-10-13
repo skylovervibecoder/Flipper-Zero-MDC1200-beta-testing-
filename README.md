@@ -43,11 +43,3 @@ Built for the **Momentum** firmware.
 - (Optional) A **Flipper Zero connected via USB** for direct upload.
 
 ---
-
-## Build & Install
-
-1. **Clone the repository** into your `applications_user` folder (or any folder):
-
-   ```bash
-   git clone https://github.com/yourusername/mdc1200_tool.git
-   cd mdc1200_tool
