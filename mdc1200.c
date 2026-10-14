@@ -1,11 +1,6 @@
 /*
  * MDC1200 PMR/FRS v0.2.0beta - Flipper Zero (Momentum dev)
  * Created by Marcopiiit
- *
- * Menu principale:
- *   Ricezione    -> log dei pacchetti MDC1200 ricevuti e decodificati
- *   Trasmissione -> elenco funzioni MDC1200, poi sessione di invio
- *   About        -> informazioni sull'autore e versione
  */
 
 #include <furi.h>
@@ -529,7 +524,8 @@ static void dec_interval(App* app, uint32_t dur) {
 static void process_edges(App* app) {
     LevelDuration ld;
     int n = 0;
-    while(n++ < 4000 &&
+    // Limitato a 200 iterazioni per ciclo per evitare blocchi della CPU (Watchdog timeout)
+    while(n++ < 200 &&
           furi_stream_buffer_receive(app->edges, &ld, sizeof(ld), 0) == sizeof(ld)) {
         dec_interval(app, level_duration_get_duration(ld));
     }
@@ -685,7 +681,6 @@ static void draw_list(
     if(count > 5) elements_scrollbar(c, sel, count);
 }
 
-// Menu principale elegante, centrato e con riquadri arrotondati
 static void draw_menu(Canvas* c, App* app) {
     canvas_set_font(c, FontPrimary);
     canvas_draw_str(c, 34, 11, "MDC1200 PRO");
@@ -703,7 +698,6 @@ static void draw_menu(Canvas* c, App* app) {
             canvas_draw_rframe(c, 12, y, 104, 12, 3);
         }
         
-        // Calcolo approssimativo per centrare il testo nel box largo 104 pixel
         canvas_draw_str(c, 20, y + 9, menu_items[i]);
         
         if(sel) {
@@ -879,26 +873,27 @@ static void draw_tx_session(Canvas* c, App* app) {
 
 static void draw_cb(Canvas* canvas, void* ctx) {
     App* app = ctx;
-    furi_mutex_acquire(app->mutex, FuriWaitForever);
-    canvas_clear(canvas);
-    switch(app->screen) {
-    case ScreenMenu:
-        draw_menu(canvas, app);
-        break;
-    case ScreenRx:
-        draw_rx(canvas, app);
-        break;
-    case ScreenTxList:
-        draw_list(canvas, "Funzione MDC1200", fn_titles, FN_COUNT, app->tx_sel, app->tx_top);
-        break;
-    case ScreenTxSession:
-        draw_tx_session(canvas, app);
-        break;
-    case ScreenAbout:
-        draw_about(canvas);
-        break;
+    if(furi_mutex_acquire(app->mutex, 25) == FuriStatusOk) {
+        canvas_clear(canvas);
+        switch(app->screen) {
+        case ScreenMenu:
+            draw_menu(canvas, app);
+            break;
+        case ScreenRx:
+            draw_rx(canvas, app);
+            break;
+        case ScreenTxList:
+            draw_list(canvas, "Funzione MDC1200", fn_titles, FN_COUNT, app->tx_sel, app->tx_top);
+            break;
+        case ScreenTxSession:
+            draw_tx_session(canvas, app);
+            break;
+        case ScreenAbout:
+            draw_about(canvas);
+            break;
+        }
+        furi_mutex_release(app->mutex);
     }
-    furi_mutex_release(app->mutex);
 }
 
 static void input_cb(InputEvent* ev, void* ctx) {
@@ -1059,12 +1054,13 @@ int32_t mdc1200_app(void* p) {
     bool running = true;
     while(running) {
         InputEvent ev;
-        if(furi_message_queue_get(queue, &ev, 10) == FuriStatusOk) {
+        if(furi_message_queue_get(queue, &ev, 25) == FuriStatusOk) {
             if(ev.type == InputTypeShort || ev.type == InputTypeRepeat ||
                ev.type == InputTypeLong) {
-                furi_mutex_acquire(app->mutex, FuriWaitForever);
-                running = handle_input(app, &ev);
-                furi_mutex_release(app->mutex);
+                if(furi_mutex_acquire(app->mutex, 50) == FuriStatusOk) {
+                    running = handle_input(app, &ev);
+                    furi_mutex_release(app->mutex);
+                }
             }
         }
         if(!running) break;
@@ -1080,34 +1076,36 @@ int32_t mdc1200_app(void* p) {
         }
         if(app->do_tx) {
             app->do_tx = false;
-            furi_mutex_acquire(app->mutex, FuriWaitForever);
-            snprintf(app->status, sizeof(app->status), "TX in corso...");
-            furi_mutex_release(app->mutex);
+            if(furi_mutex_acquire(app->mutex, 50) == FuriStatusOk) {
+                snprintf(app->status, sizeof(app->status), "TX in corso...");
+                furi_mutex_release(app->mutex);
+            }
             view_port_update(vp);
             furi_delay_ms(60);
             tx_send(app);
         }
 
-        furi_mutex_acquire(app->mutex, FuriWaitForever);
-        if(app->rx_on) {
-            process_edges(app);
-            uint32_t now = furi_get_tick();
-            if(now - app->last_rssi_tick >= 100) {
-                app->last_rssi_tick = now;
-                app->rssi = furi_hal_subghz_get_rssi();
-                app->carrier = app->rssi > RSSI_CARRIER;
-                if(app->carrier) {
-                    app->nocar = 0;
-                } else if(++app->nocar >= 5 && app->state != 0) {
-                    app->state = 0;
-                    app->sr = 0;
-                    app->count = 0;
+        if(furi_mutex_acquire(app->mutex, 50) == FuriStatusOk) {
+            if(app->rx_on) {
+                process_edges(app);
+                uint32_t now = furi_get_tick();
+                if(now - app->last_rssi_tick >= 100) {
+                    app->last_rssi_tick = now;
+                    app->rssi = furi_hal_subghz_get_rssi();
+                    app->carrier = app->rssi > RSSI_CARRIER;
+                    if(app->carrier) {
+                        app->nocar = 0;
+                    } else if(++app->nocar >= 5 && app->state != 0) {
+                        app->state = 0;
+                        app->sr = 0;
+                        app->count = 0;
+                    }
                 }
+            } else {
+                app->carrier = false;
             }
-        } else {
-            app->carrier = false;
+            furi_mutex_release(app->mutex);
         }
-        furi_mutex_release(app->mutex);
 
         view_port_update(vp);
     }
