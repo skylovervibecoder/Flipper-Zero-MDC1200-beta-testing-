@@ -1,27 +1,11 @@
 /*
- * MDC1200 PMR/FRS v0.2 - Flipper Zero (Momentum dev)
+ * MDC1200 PMR/FRS v0.2.0beta - Flipper Zero (Momentum dev)
+ * Created by Marcopiiit
  *
  * Menu principale:
  *   Ricezione    -> log dei pacchetti MDC1200 ricevuti e decodificati
  *   Trasmissione -> elenco funzioni MDC1200, poi sessione di invio
- *
- * Canali: PMR446 1-16, FRS 1-7 e 15-22 (FRS 8-14 sono a 467 MHz, fuori
- * dalla gamma del CC1101 che arriva a 464 MHz).
- *
- * TX: toni AFSK approssimati con onde quadre sulla deviazione 2-FSK
- *     (+-2.38 kHz): 1200 Hz = bit 1, 1800 Hz = bit 0 (opzione Pol per invertire).
- * RX: il CC1101 in async seriale da' il demodulato FM a 1 bit; misuro i
- *     semiperiodi per ricostruire i toni e quindi i bit.
- *
- * Pacchetto (CRC, FEC R=1/2 K=7, interleave, sync 0x07092A446F) secondo
- * l'implementazione open source MDC1200 per UV-K5. Pacchetti doppi
- * (call alert / chiamata selettiva) = due codeword consecutive.
- *
- * Tasti:
- *   Menu:        Su/Giu scegli, OK entra, Indietro esce
- *   Ricezione:   Su/Giu scorri log, Sx/Dx canale, OK banda, OK lungo cancella log
- *   Funzioni TX: Su/Giu scegli, OK apre la sessione, Indietro torna
- *   Sessione TX: Sx/Dx campo, Su/Giu cambia valore, OK trasmette, Indietro torna
+ *   About        -> informazioni sull'autore e versione
  */
 
 #include <furi.h>
@@ -34,15 +18,13 @@
 #include <string.h>
 
 #define FEC_K 7
-#define MDC_LEAD 12 // byte 0xFF di lead-in (tono costante)
-#define MDC_PRE 3 // byte di preambolo (00)
-#define MDC_TAIL 2 // byte 0xFF finali
+#define MDC_LEAD 12
+#define MDC_PRE 3
+#define MDC_TAIL 2
 #define MDC_TX_MAX (MDC_LEAD + MDC_PRE + 5 + FEC_K * 4 + MDC_TAIL)
 #define RSSI_CARRIER (-90.0f)
 #define LOG_LEN 24
-#define OP_CALL_FIRST 0x35 // primo codeword di call alert / chiamata selettiva
-
-// ---------------------------------------------------------------- canali
+#define OP_CALL_FIRST 0x35
 
 #define PMR_COUNT 16
 #define FRS_COUNT 15
@@ -58,13 +40,11 @@ typedef enum {
     BandFRS = 1,
 } Band;
 
-// ---------------------------------------------------------------- funzioni MDC1200
-
 typedef enum {
-    KindSingle, // un codeword: op/arg fissi + ID
-    KindDouble, // due codeword: destinatario + mittente
-    KindArg, // op fisso, nibble basso di arg editabile (stato/messaggio N) + ID
-    KindCustom, // OP e ARG liberi
+    KindSingle,
+    KindDouble,
+    KindArg,
+    KindCustom,
 } FnKind;
 
 typedef struct {
@@ -72,12 +52,10 @@ typedef struct {
     FnKind kind;
     uint8_t op;
     uint8_t arg;
-    uint8_t op2; // solo KindDouble: primo byte del secondo codeword
+    uint8_t op2;
     uint8_t arg2;
 } MdcFn;
 
-// Codici da implementazioni open source (UV-K5, PortaPack Mayhem, PTTLink):
-// possono variare tra costruttori; "Personalizzato" permette di provarne altri.
 #define FN_COUNT 20
 static const MdcFn fns[FN_COUNT] = {
     {"PTT ID (inizio)", KindSingle, 0x01, 0x80, 0, 0},
@@ -130,43 +108,14 @@ static const KnownOp known[] = {
     {OP_CALL_FIRST, 0x89, "Call (1/2)", "CALL"},
 };
 
-// ---------------------------------------------------------------- preset CC1101
-// 2-FSK, BW canale 58 kHz, deviazione ~2.38 kHz, async seriale su GDO0.
-
 static const uint8_t mdc_preset[] = {
-    0x02, 0x0D, // IOCFG0: serial data output (async)
-    0x03, 0x47, // FIFOTHR
-    0x07, 0x04, // PKTCTRL1
-    0x08, 0x32, // PKTCTRL0: async serial, infinite
-    0x0B, 0x06, // FSCTRL1
-    0x0C, 0x00, // FSCTRL0
-    0x10, 0xF8, // MDMCFG4: BW 58 kHz, DRATE_E=8
-    0x11, 0x83, // MDMCFG3: ~9.6 kBaud (filtro dati abbastanza largo per 1.8 kHz)
-    0x12, 0x10, // MDMCFG2: 2-FSK, no sync, no manchester
-    0x13, 0x22, // MDMCFG1
-    0x14, 0xF8, // MDMCFG0
-    0x15, 0x04, // DEVIATN: ~2.38 kHz
-    0x17, 0x00, // MCSM1
-    0x18, 0x18, // MCSM0: autocal idle->rx/tx
-    0x19, 0x16, // FOCCFG
-    0x1B, 0x43, // AGCCTRL2
-    0x1C, 0x40, // AGCCTRL1
-    0x1D, 0x91, // AGCCTRL0
-    0x20, 0xFB, // WORCTRL
-    0x21, 0xB6, // FREND1
-    0x22, 0x10, // FREND0
-    0x23, 0xE9, // FSCAL3
-    0x24, 0x2A, // FSCAL2
-    0x25, 0x00, // FSCAL1
-    0x26, 0x1F, // FSCAL0
-    0x2C, 0x81, // TEST2
-    0x2D, 0x35, // TEST1
-    0x2E, 0x09, // TEST0
-    0x00, 0x00, // fine registri
-    0xC0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // PA table
+    0x02, 0x0D, 0x03, 0x47, 0x07, 0x04, 0x08, 0x32, 0x0B, 0x06, 0x0C, 0x00,
+    0x10, 0xF8, 0x11, 0x83, 0x12, 0x10, 0x13, 0x22, 0x14, 0xF8, 0x15, 0x04,
+    0x17, 0x00, 0x18, 0x18, 0x19, 0x16, 0x1B, 0x43, 0x1C, 0x40, 0x1D, 0x91,
+    0x20, 0xFB, 0x21, 0xB6, 0x22, 0x10, 0x23, 0xE9, 0x24, 0x2A, 0x25, 0x00,
+    0x26, 0x1F, 0x2C, 0x81, 0x2D, 0x35, 0x2E, 0x09, 0x00, 0x00,
+    0xC0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
 };
-
-// ---------------------------------------------------------------- MDC1200: codifica
 
 static const uint8_t mdc_sync[5] = {0x07, 0x09, 0x2a, 0x44, 0x6f};
 
@@ -191,7 +140,6 @@ static uint16_t mdc_crc(const uint8_t* d, unsigned len) {
     return crc ^ 0xffff;
 }
 
-// xor di bit successivi: transizione -> 0 sul "raw" (1 = nessuna transizione)
 static void mdc_xor_modulation(uint8_t* data, unsigned size) {
     uint8_t prev_bit = 0;
     for(unsigned i = 0; i < size; i++) {
@@ -206,7 +154,6 @@ static void mdc_xor_modulation(uint8_t* data, unsigned size) {
     }
 }
 
-// aggiunge FEC e interleave su 14 byte; data8[0..6] = info
 static void mdc_encode_data(uint8_t* data8) {
     uint8_t sr = 0;
     for(int i = 0; i < FEC_K; i++) {
@@ -239,7 +186,6 @@ static void mdc_encode_data(uint8_t* data8) {
     }
 }
 
-// scrive un codeword (14 byte) e ritorna il puntatore successivo
 static uint8_t* mdc_put_cw(uint8_t* p, uint8_t op, uint8_t arg, uint16_t id) {
     p[0] = op;
     p[1] = arg;
@@ -253,7 +199,6 @@ static uint8_t* mdc_put_cw(uint8_t* p, uint8_t op, uint8_t arg, uint16_t id) {
     return p + FEC_K * 2;
 }
 
-// stream completo da trasmettere; ritorna il numero di byte
 static unsigned mdc_build(uint8_t* out, const MdcPkt* pk) {
     uint8_t* p = out;
     memset(p, 0xFF, MDC_LEAD);
@@ -274,8 +219,6 @@ static unsigned mdc_build(uint8_t* out, const MdcPkt* pk) {
     p += MDC_TAIL;
     return (unsigned)(p - out);
 }
-
-// ---------------------------------------------------------------- MDC1200: decodifica
 
 static void mdc_fec_correct(uint8_t* d) {
     uint8_t sr = 0;
@@ -305,7 +248,6 @@ static void mdc_fec_correct(uint8_t* d) {
     }
 }
 
-// d: 14 byte ricevuti (dopo l'inversione dello xor); true se il CRC torna
 static bool mdc_decode(uint8_t* d) {
     uint8_t deint[FEC_K * 2 * 8];
     unsigned k = 0;
@@ -331,17 +273,16 @@ static bool mdc_decode(uint8_t* d) {
     return crc1 == crc2;
 }
 
-// ---------------------------------------------------------------- stato app
-
 typedef enum {
     ScreenMenu,
     ScreenRx,
     ScreenTxList,
     ScreenTxSession,
+    ScreenAbout,
 } Screen;
 
 typedef struct {
-    uint32_t t; // secondi dall'avvio
+    uint32_t t;
     uint8_t op;
     uint8_t arg;
     uint16_t id;
@@ -359,11 +300,9 @@ typedef struct {
     Screen screen;
     uint8_t menu_sel;
 
-    // canale (condiviso tra ricezione e trasmissione)
     Band band;
     uint8_t ch[2];
 
-    // radio
     bool rx_on;
     bool want_rx;
     bool retune;
@@ -373,7 +312,6 @@ typedef struct {
     uint8_t nocar;
     uint32_t last_rssi_tick;
 
-    // log ricezione
     LogEntry log[LOG_LEN];
     uint8_t log_head;
     uint8_t log_count;
@@ -382,34 +320,30 @@ typedef struct {
     uint32_t rx_ok;
     uint32_t rx_err;
 
-    // trasmissione
     uint8_t tx_sel;
     uint8_t tx_top;
     uint8_t tx_fn;
-    uint8_t pos; // 0 banda, 1 canale, 2.. nibble, ultimo = polarita'
+    uint8_t pos;
     uint8_t id_nib[4];
     uint8_t src_nib[4];
     uint8_t cust_nib[4];
-    uint8_t arg_nib; // nibble basso di ARG per le funzioni KindArg (stato/messaggio)
+    uint8_t arg_nib;
     bool inv_tx;
     char status[28];
 
-    // ISR RX
     volatile uint32_t acc;
 
-    // decoder
     uint64_t sync_raw;
-    uint8_t run_label; // 0 nessuno, 1 corto (1800 Hz), 2 lungo (1200 Hz)
+    uint8_t run_label;
     uint32_t run_time;
     uint32_t prev_dur;
     uint64_t sr;
-    uint8_t state; // 0 cerca sync, 1 primo codeword, 2 secondo codeword
+    uint8_t state;
     bool inv_rx;
     uint8_t dprev;
     uint8_t count;
     uint8_t data[FEC_K * 2];
 
-    // TX
     uint8_t txbuf[MDC_TX_MAX];
     uint32_t tx_nbits;
     uint32_t tx_bit;
@@ -418,7 +352,8 @@ typedef struct {
     bool tx_inv;
 } App;
 
-static const char* const menu_items[] = {"Ricezione", "Trasmissione"};
+static const char* const menu_items[] = {"Ricezione", "Trasmissione", "About"};
+#define MENU_COUNT 3
 static const char* fn_titles[FN_COUNT];
 
 static uint32_t cur_freq(const App* app) {
@@ -434,9 +369,7 @@ static uint8_t cur_ch_number(const App* app) {
     return app->band == BandPMR ? (uint8_t)(app->ch[BandPMR] + 1) : frs_num[app->ch[BandFRS]];
 }
 
-// ---------------------------------------------------------------- log ricezione
-
-static LogEntry* log_get(App* app, uint8_t i) { // 0 = piu' recente
+static LogEntry* log_get(App* app, uint8_t i) {
     uint8_t idx = (uint8_t)((app->log_head + LOG_LEN - 1 - i) % LOG_LEN);
     return &app->log[idx];
 }
@@ -450,7 +383,6 @@ static void log_add(App* app, uint8_t op, uint8_t arg, uint16_t id) {
     e->id = id;
     app->log_head = (uint8_t)((app->log_head + 1) % LOG_LEN);
     if(app->log_count < LOG_LEN) app->log_count++;
-    // mantiene selezionata la stessa voce se l'utente sta scorrendo
     if(app->rx_sel > 0 && app->rx_sel < app->log_count - 1) app->rx_sel++;
 }
 
@@ -477,7 +409,6 @@ static void entry_names(const LogEntry* e, const char** name, const char** shrt)
             return;
         }
     }
-    // stato/risposta/messaggio: op fisso, nibble basso di arg = numero 0-15
     if(e->op == 0x46) {
         *name = "Stato inviato";
         *shrt = "STS";
@@ -489,8 +420,6 @@ static void entry_names(const LogEntry* e, const char** name, const char** shrt)
         *shrt = "MSG";
     }
 }
-
-// ---------------------------------------------------------------- RX
 
 static void dec_reset(App* app) {
     app->run_label = 0;
@@ -511,7 +440,7 @@ static void finish_codeword(App* app) {
         if(ok) {
             log_add(app, tmp[0], tmp[1], id);
             app->rx_ok++;
-            if(tmp[0] == OP_CALL_FIRST) { // atteso un secondo codeword
+            if(tmp[0] == OP_CALL_FIRST) {
                 app->state = 2;
                 app->count = 0;
                 memset(app->data, 0, sizeof(app->data));
@@ -551,7 +480,7 @@ static void push_bit(App* app, uint8_t bit) {
             app->inv_rx = inv;
             app->state = 1;
             app->count = 0;
-            app->dprev = 1; // ultimo bit del sync (0x6F) = 1
+            app->dprev = 1;
             memset(app->data, 0, sizeof(app->data));
         }
         return;
@@ -563,30 +492,30 @@ static void push_bit(App* app, uint8_t bit) {
     if(d) app->data[app->count >> 3] |= (uint8_t)(1u << (7 - (app->count & 7)));
     app->count++;
 
-    if(app->count >= FEC_K * 16) finish_codeword(app); // 112 bit
+    if(app->count >= FEC_K * 16) finish_codeword(app);
 }
 
 static void dec_flush(App* app) {
     if(app->run_label == 0) return;
-    // 1 bit = 833.33 us
     uint32_t nbits = (app->run_time * 3 + 1250) / 2500;
     if(nbits > 64) nbits = 64;
-    uint8_t bit = (app->run_label == 2) ? 1 : 0; // lungo (1200 Hz) = 1
+    uint8_t bit = (app->run_label == 2) ? 1 : 0;
     while(nbits--) push_bit(app, bit);
     app->run_label = 0;
     app->run_time = 0;
 }
 
 static void dec_interval(App* app, uint32_t dur) {
-    if(dur > 1100) { // pausa: non e' un tono
+    if(dur > 1100) {
         dec_flush(app);
         app->prev_dur = 0;
         return;
     }
-    // periodo stimato = intervallo precedente + corrente (immune al duty cycle)
+
     uint32_t p = app->prev_dur ? (app->prev_dur + dur) : (dur * 2);
     app->prev_dur = dur;
-    uint8_t label = (p < 694) ? 1 : 2; // 556 us (1800 Hz) vs 833 us (1200 Hz)
+    
+    uint8_t label = (p < 694) ? 1 : 2;
 
     if(label == app->run_label) {
         app->run_time += dur;
@@ -606,7 +535,6 @@ static void process_edges(App* app) {
     }
 }
 
-// callback dal driver (contesto interrupt): accorpo i glitch < 200 us
 static void rx_cb(bool level, uint32_t duration, void* ctx) {
     App* app = ctx;
     app->acc += duration;
@@ -639,10 +567,6 @@ static void rx_stop(App* app) {
     app->rx_on = false;
 }
 
-// ---------------------------------------------------------------- TX
-
-// bit 1 = 1200 Hz = 2 semiperiodi da 417 us; bit 0 = 1800 Hz = 3 da 278 us
-// (834 us per bit, fase continua tra un bit e l'altro)
 static LevelDuration tx_cb(void* ctx) {
     App* app = ctx;
     if(app->tx_bit >= app->tx_nbits) return level_duration_reset();
@@ -733,8 +657,6 @@ static void tx_send(App* app) {
     furi_mutex_release(app->mutex);
 }
 
-// ---------------------------------------------------------------- UI
-
 static void fix_top(uint8_t sel, uint8_t* top, uint8_t rows) {
     if(sel < *top) *top = sel;
     if(sel >= *top + rows) *top = (uint8_t)(sel - rows + 1);
@@ -761,6 +683,33 @@ static void draw_list(
         if(s) canvas_set_color(c, ColorBlack);
     }
     if(count > 5) elements_scrollbar(c, sel, count);
+}
+
+// Menu principale elegante, centrato e con riquadri arrotondati
+static void draw_menu(Canvas* c, App* app) {
+    canvas_set_font(c, FontPrimary);
+    canvas_draw_str(c, 34, 11, "MDC1200 PRO");
+    canvas_draw_line(c, 10, 14, 117, 14);
+
+    canvas_set_font(c, FontSecondary);
+    for(uint8_t i = 0; i < MENU_COUNT; i++) {
+        uint8_t y = (uint8_t)(20 + i * 14);
+        bool sel = (app->menu_sel == i);
+        
+        if(sel) {
+            canvas_draw_rbox(c, 12, y, 104, 12, 3);
+            canvas_set_color(c, ColorWhite);
+        } else {
+            canvas_draw_rframe(c, 12, y, 104, 12, 3);
+        }
+        
+        // Calcolo approssimativo per centrare il testo nel box largo 104 pixel
+        canvas_draw_str(c, 20, y + 9, menu_items[i]);
+        
+        if(sel) {
+            canvas_set_color(c, ColorBlack);
+        }
+    }
 }
 
 static void draw_rx(Canvas* c, App* app) {
@@ -834,6 +783,15 @@ static void draw_rx(Canvas* c, App* app) {
     canvas_draw_str(c, 2, 61, buf);
 }
 
+static void draw_about(Canvas* c) {
+    canvas_set_font(c, FontPrimary);
+    canvas_draw_str(c, 32, 14, "Informazioni");
+    canvas_draw_line(c, 10, 18, 117, 18);
+    canvas_set_font(c, FontSecondary);
+    canvas_draw_str(c, 14, 34, "MDC1200 v.0.2.0beta");
+    canvas_draw_str(c, 14, 50, "Created by Marcopiiit");
+}
+
 static void nib_pos(FnKind k, uint8_t i, uint8_t* x, uint8_t* y) {
     if(k == KindSingle) {
         *x = (uint8_t)(16 + 8 * i);
@@ -873,7 +831,6 @@ static void draw_tx_session(Canvas* c, App* app) {
     canvas_draw_str(c, 0, 9, f->name);
     canvas_set_font(c, FontSecondary);
 
-    // banda e canale
     canvas_draw_str(c, 2, 21, app->band == BandPMR ? "PMR" : "FRS");
     snprintf(buf, sizeof(buf), "%02u", cur_ch_number(app));
     canvas_draw_str(c, 28, 21, buf);
@@ -883,7 +840,6 @@ static void draw_tx_session(Canvas* c, App* app) {
     if(app->pos == 0) canvas_draw_frame(c, 0, 12, 22, 11);
     if(app->pos == 1) canvas_draw_frame(c, 26, 12, 14, 11);
 
-    // etichette e codici
     if(k == KindSingle) {
         canvas_draw_str(c, 2, 38, "ID");
         snprintf(buf, sizeof(buf), "%02X/%02X", f->op, f->arg);
@@ -907,7 +863,6 @@ static void draw_tx_session(Canvas* c, App* app) {
         canvas_draw_str(c, 2, 46, "ID");
     }
 
-    // nibble modificabili
     for(uint8_t i = 0; i < n; i++) {
         uint8_t x, y;
         nib_pos(k, i, &x, &y);
@@ -917,7 +872,6 @@ static void draw_tx_session(Canvas* c, App* app) {
         if(app->pos == 2 + i) canvas_draw_frame(c, x - 2, y - 9, 9, 11);
     }
 
-    // polarita' e stato
     canvas_draw_str(c, 2, 62, app->inv_tx ? "Pol: inv" : "Pol: norm");
     if(app->pos == 2 + n) canvas_draw_frame(c, 0, 53, 50, 11);
     canvas_draw_str(c, 62, 62, app->status[0] ? app->status : "OK: trasmetti");
@@ -929,7 +883,7 @@ static void draw_cb(Canvas* canvas, void* ctx) {
     canvas_clear(canvas);
     switch(app->screen) {
     case ScreenMenu:
-        draw_list(canvas, "MDC1200", menu_items, 2, app->menu_sel, 0);
+        draw_menu(canvas, app);
         break;
     case ScreenRx:
         draw_rx(canvas, app);
@@ -940,6 +894,9 @@ static void draw_cb(Canvas* canvas, void* ctx) {
     case ScreenTxSession:
         draw_tx_session(canvas, app);
         break;
+    case ScreenAbout:
+        draw_about(canvas);
+        break;
     }
     furi_mutex_release(app->mutex);
 }
@@ -947,8 +904,6 @@ static void draw_cb(Canvas* canvas, void* ctx) {
 static void input_cb(InputEvent* ev, void* ctx) {
     furi_message_queue_put((FuriMessageQueue*)ctx, ev, 0);
 }
-
-// ---------------------------------------------------------------- input
 
 static void change_channel(App* app, int delta) {
     uint8_t c = band_count(app->band);
@@ -972,7 +927,6 @@ static void tx_edit(App* app, int delta) {
     }
 }
 
-// ritorna false per uscire
 static bool handle_input(App* app, const InputEvent* ev) {
     app->status[0] = 0;
     bool is_short = ev->type == InputTypeShort;
@@ -980,14 +934,17 @@ static bool handle_input(App* app, const InputEvent* ev) {
     switch(app->screen) {
     case ScreenMenu:
         if(ev->key == InputKeyBack && is_short) return false;
-        if(ev->key == InputKeyUp) app->menu_sel = (uint8_t)((app->menu_sel + 1) % 2);
-        if(ev->key == InputKeyDown) app->menu_sel = (uint8_t)((app->menu_sel + 1) % 2);
+        if(ev->key == InputKeyUp)
+            app->menu_sel = (uint8_t)((app->menu_sel + MENU_COUNT - 1) % MENU_COUNT);
+        if(ev->key == InputKeyDown) app->menu_sel = (uint8_t)((app->menu_sel + 1) % MENU_COUNT);
         if(ev->key == InputKeyOk && is_short) {
             if(app->menu_sel == 0) {
                 app->screen = ScreenRx;
                 app->want_rx = true;
-            } else {
+            } else if(app->menu_sel == 1) {
                 app->screen = ScreenTxList;
+            } else {
+                app->screen = ScreenAbout;
             }
         }
         break;
@@ -1052,11 +1009,15 @@ static bool handle_input(App* app, const InputEvent* ev) {
         }
         break;
     }
+
+    case ScreenAbout:
+        if(ev->key == InputKeyBack && is_short) {
+            app->screen = ScreenMenu;
+        }
+        break;
     }
     return true;
 }
-
-// ---------------------------------------------------------------- main
 
 static uint64_t calc_sync_raw(void) {
     uint8_t s[5];
@@ -1079,7 +1040,6 @@ int32_t mdc1200_app(void* p) {
     app->screen = ScreenMenu;
     app->band = BandPMR;
     app->rssi = -120.0f;
-    // valori iniziali: ID 1234, Src 5678, personalizzato 01/80
     const uint8_t id0[4] = {1, 2, 3, 4};
     const uint8_t src0[4] = {5, 6, 7, 8};
     const uint8_t cust0[4] = {0, 1, 8, 0};
@@ -1109,7 +1069,6 @@ int32_t mdc1200_app(void* p) {
         }
         if(!running) break;
 
-        // gestione radio fuori dal mutex
         if(app->want_rx && !app->rx_on) rx_start(app);
         if(!app->want_rx && app->rx_on) rx_stop(app);
         if(app->retune) {
@@ -1140,7 +1099,7 @@ int32_t mdc1200_app(void* p) {
                 if(app->carrier) {
                     app->nocar = 0;
                 } else if(++app->nocar >= 5 && app->state != 0) {
-                    app->state = 0; // portante persa a meta' pacchetto
+                    app->state = 0;
                     app->sr = 0;
                     app->count = 0;
                 }

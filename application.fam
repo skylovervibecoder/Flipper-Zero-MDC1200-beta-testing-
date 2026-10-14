@@ -6,7 +6,8 @@ App(
     requires=["gui"],
     stack_size=4 * 1024,
     fap_category="Sub-GHz",
-    fap_author="user",
+    fap_author="Marcopiiit",
     fap_version="0.2",
+    fap_icon="icon.png",
     fap_description="Menu MDC1200: ricezione con log pacchetti e trasmissione funzioni su canali PMR446 e FRS",
 )
