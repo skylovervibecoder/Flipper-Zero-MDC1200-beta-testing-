@@ -1,4 +1,4 @@
-# MDC1200 Tool for Flipper Zero (Momentum)
+# MDC1200 (Momentum)
 
 A Flipper Zero application (FAP) for **encoding, transmitting, receiving, and decoding MDC1200** signaling on PMR446 and FRS channels.  
 Built for the **Momentum** firmware.
