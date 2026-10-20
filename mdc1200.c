@@ -1,5 +1,5 @@
 /*
- * MDC1200 v0.2.1beta - Flipper Zero (Momentum dev)
+ * MDC1200 v0.2.2beta - Flipper Zero (Momentum dev)
  * Created by Marcopiiit
  */
 
@@ -992,7 +992,7 @@ static void draw_about(Canvas* c) {
 
     canvas_set_font(c, FontSecondary);
 
-    canvas_draw_str(c, 14, 34, "MDC1200 v0.2.1beta");
+    canvas_draw_str(c, 14, 34, "MDC1200 v0.2.2beta");
     canvas_draw_str(c, 14, 50, "Created by Marcopiiit");
 }
 
