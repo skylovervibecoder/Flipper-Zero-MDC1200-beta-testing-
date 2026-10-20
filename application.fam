@@ -1,6 +1,6 @@
 App(
     appid="mdc1200",
-    name="MDC1200 PMR/FRS",
+    name="MDC1200",
     apptype=FlipperAppType.EXTERNAL,
     entry_point="mdc1200_app",
     requires=["gui"],
